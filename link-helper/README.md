@@ -5,8 +5,10 @@ Small NAS-side HTTP helper for manual symlink repair from TrguiNG.
 ## Endpoints
 
 - `GET /health`
+- `GET /symlinks`
 - `POST /search-candidates`
 - `POST /create-symlink`
+- `POST /delete-symlink`
 
 ## Environment variables
 
@@ -63,4 +65,20 @@ curl -H "Authorization: Bearer replace-me" \
   -H "Content-Type: application/json" \
   -d '{"sourcePath":"/downloads/movies/Movie Name 2024","targetPath":"/downloads/movies/Movie.Name.2024.1080p.BluRay"}' \
   http://nas-host:8787/create-symlink
+```
+
+List symlinks:
+
+```bash
+curl -H "Authorization: Bearer replace-me" \
+  http://nas-host:8787/symlinks
+```
+
+Delete:
+
+```bash
+curl -H "Authorization: Bearer replace-me" \
+  -H "Content-Type: application/json" \
+  -d '{"path":"/downloads/movies/Movie.Name.2024.1080p.BluRay"}' \
+  http://nas-host:8787/delete-symlink
 ```

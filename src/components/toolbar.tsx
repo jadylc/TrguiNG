@@ -333,6 +333,13 @@ function Toolbar(props: ToolbarProps) {
                 <Icon.Speedometer2 size="1.5rem" />
             </ToolbarButton>
 
+            <ToolbarButton
+                title="Manage symlinks"
+                onClick={() => { props.modals.current?.manageSymlinks(); }}
+            >
+                <Icon.Link45deg size="1.5rem" />
+            </ToolbarButton>
+
             <TextInput mx="sm" ref={searchRef}
                 icon={<Icon.Search size="1rem" />}
                 placeholder={searchPlaceholder}

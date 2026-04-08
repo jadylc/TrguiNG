@@ -52,6 +52,30 @@ export interface CreateSymlinkResponse {
     targetPath: string,
 }
 
+export interface ListSymlinksResponse {
+    symlinks: SymlinkEntry[],
+}
+
+export interface SymlinkEntry {
+    path: string,
+    name: string,
+    rawTarget: string,
+    targetPath: string,
+    targetExists: boolean,
+    targetKind: "file" | "dir" | "other",
+    status: "ok" | "broken",
+    root: string,
+}
+
+export interface DeleteSymlinkRequest {
+    path: string,
+}
+
+export interface DeleteSymlinkResponse {
+    status: "deleted",
+    path: string,
+}
+
 interface ErrorResponse {
     error?: string,
 }
@@ -72,7 +96,7 @@ function validateHeaderValue(name: string, value: string) {
 async function helperFetchBrowser<TResponse>(
     serverConfig: ServerConfig,
     path: string,
-    payload?: SearchCandidatesRequest | CreateSymlinkRequest,
+    payload?: SearchCandidatesRequest | CreateSymlinkRequest | DeleteSymlinkRequest,
 ) {
     const headers: HeadersInit = {
         Accept: "application/json",
@@ -111,7 +135,7 @@ async function helperFetchBrowser<TResponse>(
 async function helperFetch<TResponse>(
     serverConfig: ServerConfig,
     path: string,
-    payload?: SearchCandidatesRequest | CreateSymlinkRequest,
+    payload?: SearchCandidatesRequest | CreateSymlinkRequest | DeleteSymlinkRequest,
 ) {
     if (serverConfig.linkHelper.url.trim() === "") {
         throw new Error("Link helper URL is not configured");
@@ -145,4 +169,12 @@ export async function searchLinkCandidates(serverConfig: ServerConfig, payload: 
 
 export async function createLinkSymlink(serverConfig: ServerConfig, payload: CreateSymlinkRequest) {
     return await helperFetch<CreateSymlinkResponse>(serverConfig, "/create-symlink", payload);
+}
+
+export async function listLinkSymlinks(serverConfig: ServerConfig) {
+    return await helperFetch<ListSymlinksResponse>(serverConfig, "/symlinks");
+}
+
+export async function deleteLinkSymlink(serverConfig: ServerConfig, payload: DeleteSymlinkRequest) {
+    return await helperFetch<DeleteSymlinkResponse>(serverConfig, "/delete-symlink", payload);
 }

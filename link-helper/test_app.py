@@ -96,6 +96,71 @@ class LinkHelperTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Linux-like permissions in this environment")
+    def test_list_symlinks_marks_broken_entries(self) -> None:
+        root = self._case_root("list_links").resolve()
+        try:
+            source = root / "source"
+            source.mkdir()
+            valid_link = root / "valid_link"
+            broken_link = root / "broken_link"
+            os.symlink(source.as_posix(), valid_link.as_posix())
+            os.symlink((root / "missing_source").as_posix(), broken_link.as_posix())
+
+            service = LinkHelperService(
+                LinkHelperConfig(
+                    host="127.0.0.1",
+                    port=8787,
+                    api_token="",
+                    allowed_roots=[root],
+                    search_roots=[],
+                    candidate_limit=10,
+                    min_score=0.35,
+                    auto_create_target_parent=True,
+                )
+            )
+
+            result = service.list_symlinks()
+            statuses = {item["path"]: item["status"] for item in result["symlinks"]}
+
+            self.assertEqual(statuses[broken_link.as_posix()], "broken")
+            self.assertEqual(statuses[valid_link.as_posix()], "ok")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Linux-like permissions in this environment")
+    def test_delete_symlink(self) -> None:
+        root = self._case_root("delete_link").resolve()
+        try:
+            source = root / "source"
+            source.mkdir()
+            target = root / "target"
+            os.symlink(source.as_posix(), target.as_posix())
+
+            service = LinkHelperService(
+                LinkHelperConfig(
+                    host="127.0.0.1",
+                    port=8787,
+                    api_token="",
+                    allowed_roots=[root],
+                    search_roots=[],
+                    candidate_limit=10,
+                    min_score=0.35,
+                    auto_create_target_parent=True,
+                )
+            )
+
+            result = service.delete_symlink({
+                "path": target.as_posix(),
+            })
+
+            self.assertEqual(result["status"], "deleted")
+            self.assertFalse(target.exists())
+            self.assertFalse(target.is_symlink())
+            self.assertTrue(source.exists())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

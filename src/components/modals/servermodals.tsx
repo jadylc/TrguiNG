@@ -27,6 +27,7 @@ import { EditTorrent } from "./edittorrent";
 import type { ServerTabsRef } from "components/servertabs";
 import { EditTrackers } from "./edittrackers";
 import { LinkTorrentModal } from "./linktorrent";
+import { SymlinkManagerModal } from "./symlinkmanager";
 const { TAURI, appWindow } = await import(/* webpackChunkName: "taurishim" */"taurishim");
 
 export interface ModalCallbacks {
@@ -39,6 +40,7 @@ export interface ModalCallbacks {
     editTrackers: () => void,
     editTorrent: () => void,
     linkTorrent: (torrentId?: number) => void,
+    manageSymlinks: () => void,
 }
 
 interface ServerModalsProps {
@@ -81,6 +83,7 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
     const [showEditTrackersModal, openEditTrackersModal, closeEditTrackersModal] = usePausingModalState(props.runUpdates);
     const [showEditTorrentModal, openEditTorrentModal, closeEditTorrentModal] = usePausingModalState(props.runUpdates);
     const [showLinkTorrentModal, openLinkTorrentModal, closeLinkTorrentModal] = usePausingModalState(props.runUpdates);
+    const [showSymlinkManagerModal, openSymlinkManagerModal, closeSymlinkManagerModal] = usePausingModalState(props.runUpdates);
 
     const [linkTorrentId, setLinkTorrentId] = useState<number>();
     useImperativeHandle(ref, () => ({
@@ -96,6 +99,7 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
             setLinkTorrentId(torrentId);
             openLinkTorrentModal();
         },
+        manageSymlinks: openSymlinkManagerModal,
     }));
 
     const [magnetLink, setMagnetLink] = useState<string>();
@@ -215,6 +219,8 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
             opened={showEditTorrentModal} close={closeEditTorrentModal} />
         <LinkTorrentModal
             opened={showLinkTorrentModal} close={closeLinkTorrentModal} torrentId={linkTorrentId} />
+        <SymlinkManagerModal
+            opened={showSymlinkManagerModal} close={closeSymlinkManagerModal} />
     </>;
 });
 

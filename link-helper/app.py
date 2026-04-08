@@ -133,6 +133,9 @@ class LinkHelperService:
     def _resolve(self, value: str) -> Path:
         return Path(value).resolve(strict=False)
 
+    def _absolute(self, value: str) -> Path:
+        return Path(os.path.abspath(value))
+
     def _ensure_within_allowed_roots(self, path: Path, field_name: str) -> None:
         for root in self.config.allowed_roots:
             try:
@@ -163,6 +166,63 @@ class LinkHelperService:
             "allowedRoots": [root.as_posix() for root in self.config.allowed_roots],
             "searchRoots": [root.as_posix() for root in self.config.search_roots],
         }
+
+    def _iter_symlinks(self, directory: Path):
+        try:
+            with os.scandir(directory) as entries:
+                subdirs: list[Path] = []
+                for entry in entries:
+                    try:
+                        entry_path = Path(entry.path)
+                        if entry.is_symlink():
+                            yield entry_path
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            subdirs.append(entry_path)
+                    except OSError:
+                        continue
+        except OSError:
+            return
+
+        for subdir in subdirs:
+            yield from self._iter_symlinks(subdir)
+
+    def _describe_symlink(self, symlink_path: Path, root: Path) -> dict[str, Any]:
+        raw_target = os.readlink(symlink_path)
+        if Path(raw_target).is_absolute():
+            resolved_target = Path(raw_target).resolve(strict=False)
+        else:
+            resolved_target = (symlink_path.parent / raw_target).resolve(strict=False)
+
+        target_exists = resolved_target.exists()
+        return {
+            "path": symlink_path.as_posix(),
+            "name": symlink_path.name,
+            "rawTarget": raw_target,
+            "targetPath": resolved_target.as_posix(),
+            "targetExists": target_exists,
+            "targetKind": candidate_kind(resolved_target) if target_exists else "other",
+            "status": "ok" if target_exists else "broken",
+            "root": root.as_posix(),
+        }
+
+    def list_symlinks(self) -> dict[str, Any]:
+        symlinks: list[dict[str, Any]] = []
+        seen_paths: set[Path] = set()
+
+        for root in self.config.allowed_roots:
+            if not root.exists() or not root.is_dir():
+                continue
+
+            for symlink_path in self._iter_symlinks(root):
+                absolute_symlink_path = self._absolute(symlink_path.as_posix())
+                if absolute_symlink_path in seen_paths:
+                    continue
+                seen_paths.add(absolute_symlink_path)
+                symlinks.append(self._describe_symlink(absolute_symlink_path, root))
+
+        symlinks.sort(key=lambda item: (item["status"] != "broken", item["path"]))
+        return {"symlinks": symlinks}
 
     def search_candidates(self, payload: dict[str, Any]) -> dict[str, Any]:
         torrent_name = str(payload.get("torrentName", "")).strip()
@@ -265,6 +325,27 @@ class LinkHelperService:
             "targetPath": target.as_posix(),
         }
 
+    def delete_symlink(self, payload: dict[str, Any]) -> dict[str, Any]:
+        symlink_path = str(payload.get("path", "")).strip()
+
+        if not symlink_path:
+            raise LinkHelperError("path is required")
+
+        link_path = self._absolute(symlink_path)
+        self._ensure_within_allowed_roots(link_path, "path")
+
+        if not link_path.exists() and not link_path.is_symlink():
+            raise LinkHelperError(f"path does not exist: {link_path}", HTTPStatus.NOT_FOUND)
+        if not link_path.is_symlink():
+            raise LinkHelperError(f"path is not a symlink: {link_path}")
+
+        link_path.unlink()
+
+        return {
+            "status": "deleted",
+            "path": link_path.as_posix(),
+        }
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "TrguiLinkHelper/0.1"
@@ -290,6 +371,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/health":
                 self._write_json(HTTPStatus.OK, self.service.health())
                 return
+            if parsed.path == "/symlinks":
+                self._write_json(HTTPStatus.OK, self.service.list_symlinks())
+                return
             self._write_error(LinkHelperError("Not Found", HTTPStatus.NOT_FOUND))
         except LinkHelperError as exc:
             self._write_error(exc)
@@ -304,6 +388,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/create-symlink":
                 self._write_json(HTTPStatus.OK, self.service.create_symlink(payload))
+                return
+            if parsed.path == "/delete-symlink":
+                self._write_json(HTTPStatus.OK, self.service.delete_symlink(payload))
                 return
             self._write_error(LinkHelperError("Not Found", HTTPStatus.NOT_FOUND))
         except LinkHelperError as exc:
