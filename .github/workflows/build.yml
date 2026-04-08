@@ -138,12 +138,14 @@ jobs:
 
   publish:
     needs: build-binaries
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       # Download the previously uploaded artifacts
       - uses: actions/download-artifact@v4
@@ -160,21 +162,74 @@ jobs:
       - name: Determine release mode
         id: release-mode
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          if [[ "$TAG_NAME" == nightly-* ]]; then
+          if [[ "${GITHUB_REF}" == "refs/heads/master" ]]; then
+            echo "tag_name=latest-build" >> "$GITHUB_OUTPUT"
+            echo "release_name=Latest Build" >> "$GITHUB_OUTPUT"
             echo "draft=false" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
             {
               echo "body<<EOF"
-              echo "Automated nightly build for \`$TAG_NAME\`."
+              echo "Automated build from \`master\`."
               echo
               echo "Commit: \`${GITHUB_SHA}\`"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
           else
-            echo "draft=true" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            echo "release_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+            if [[ "$TAG_NAME" == nightly-* ]]; then
+              echo "draft=false" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              {
+                echo "body<<EOF"
+                echo "Automated nightly build for \`$TAG_NAME\`."
+                echo
+                echo "Commit: \`${GITHUB_SHA}\`"
+                echo "EOF"
+              } >> "$GITHUB_OUTPUT"
+            else
+              echo "draft=true" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
+
+      - name: Update rolling release tag
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git tag -f latest-build "$GITHUB_SHA"
+          git push origin refs/tags/latest-build --force
+
+      - name: Clean existing rolling release assets
+        if: github.ref == 'refs/heads/master'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = 'latest-build';
+            try {
+              const { data: release } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+
+              for (const asset of release.assets) {
+                core.info(`Deleting asset ${asset.name} (${asset.id})`);
+                await github.rest.repos.deleteReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  asset_id: asset.id,
+                });
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                core.info('No existing latest-build release found.');
+                return;
+              }
+
+              throw error;
+            }
 
       # Generate changelog
       - id: prevtag
@@ -197,6 +252,9 @@ jobs:
         env:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
         with:
+          tag_name: ${{ steps.release-mode.outputs.tag_name }}
+          name: ${{ steps.release-mode.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
           draft: ${{ steps.release-mode.outputs.draft }}
           prerelease: ${{ steps.release-mode.outputs.prerelease }}
           files: ./artifacts/**/*
