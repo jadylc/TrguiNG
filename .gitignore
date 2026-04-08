@@ -8,3 +8,5 @@ tests/manual.torrent
 src/build
 .DS_Store
 *.mmdb
+link-helper/.tmp/
+link-helper/__pycache__/

@@ -33,6 +33,7 @@ export default function WebApp() {
             : {
                 name: "transmission",
                 connection: { url: "", username: "", password: "" },
+                linkHelper: { url: "", token: "" },
                 expandedDirFilters: [],
                 lastSaveDirs: [],
                 pathMappings: [],

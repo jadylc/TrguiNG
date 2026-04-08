@@ -26,6 +26,7 @@ import { DaemonSettingsModal } from "./daemon";
 import { EditTorrent } from "./edittorrent";
 import type { ServerTabsRef } from "components/servertabs";
 import { EditTrackers } from "./edittrackers";
+import { LinkTorrentModal } from "./linktorrent";
 const { TAURI, appWindow } = await import(/* webpackChunkName: "taurishim" */"taurishim");
 
 export interface ModalCallbacks {
@@ -37,6 +38,7 @@ export interface ModalCallbacks {
     daemonSettings: () => void,
     editTrackers: () => void,
     editTorrent: () => void,
+    linkTorrent: (torrentId?: number) => void,
 }
 
 interface ServerModalsProps {
@@ -78,7 +80,9 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
     const [showDaemonSettingsModal, openDaemonSettingsModal, closeDaemonSettingsModal] = usePausingModalState(props.runUpdates);
     const [showEditTrackersModal, openEditTrackersModal, closeEditTrackersModal] = usePausingModalState(props.runUpdates);
     const [showEditTorrentModal, openEditTorrentModal, closeEditTorrentModal] = usePausingModalState(props.runUpdates);
+    const [showLinkTorrentModal, openLinkTorrentModal, closeLinkTorrentModal] = usePausingModalState(props.runUpdates);
 
+    const [linkTorrentId, setLinkTorrentId] = useState<number>();
     useImperativeHandle(ref, () => ({
         setLabels: openLabelsModal,
         remove: openRemoveModal,
@@ -88,6 +92,10 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
         daemonSettings: openDaemonSettingsModal,
         editTrackers: openEditTrackersModal,
         editTorrent: openEditTorrentModal,
+        linkTorrent: (torrentId?: number) => {
+            setLinkTorrentId(torrentId);
+            openLinkTorrentModal();
+        },
     }));
 
     const [magnetLink, setMagnetLink] = useState<string>();
@@ -205,6 +213,8 @@ const ServerModals = React.forwardRef<ModalCallbacks, ServerModalsProps>(functio
             opened={showEditTrackersModal} close={closeEditTrackersModal} />
         <EditTorrent
             opened={showEditTorrentModal} close={closeEditTorrentModal} />
+        <LinkTorrentModal
+            opened={showLinkTorrentModal} close={closeLinkTorrentModal} torrentId={linkTorrentId} />
     </>;
 });
 

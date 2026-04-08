@@ -616,6 +616,7 @@ interface EditableNameFieldProps extends React.PropsWithChildren {
     onUpdate?: (newName: string, onStart: () => void, onEnd: () => void) => void,
     onArrowLeftRight?: (key: string) => void,
     extensionLength?: number,
+    actions?: React.ReactNode,
 }
 
 export function EditableNameField(props: EditableNameFieldProps) {
@@ -708,23 +709,27 @@ export function EditableNameField(props: EditableNameFieldProps) {
                     title={showNameTooltip ? props.currentName : undefined}>
                     {props.currentName}
                 </Box>}
-            {isHover && !isRenaming && props.onUpdate !== undefined
-                ? <ActionIcon onClick={renameHandler} title="Rename (F2)"
-                    sx={(theme) => ({
-                        flexShrink: 0,
-                        ".selected &": { color: theme.colors.gray[2] },
-                        "@media (hover: hover)": {
-                            "&:hover": {
-                                color: theme.colorScheme === "dark"
-                                    ? theme.white
-                                    : theme.colors.dark[8],
-                                backgroundColor: "rgba(127, 127, 127, 0.15)",
-                            },
-                            ".selected &:hover": { color: theme.white },
-                        },
-                    })} >
-                    <Icon.InputCursorText size="1rem" />
-                </ActionIcon>
+            {isHover && !isRenaming && (props.actions !== undefined || props.onUpdate !== undefined)
+                ? <Group spacing={0} noWrap>
+                    {props.actions}
+                    {props.onUpdate !== undefined &&
+                        <ActionIcon onClick={renameHandler} title="Rename (F2)"
+                            sx={(theme) => ({
+                                flexShrink: 0,
+                                ".selected &": { color: theme.colors.gray[2] },
+                                "@media (hover: hover)": {
+                                    "&:hover": {
+                                        color: theme.colorScheme === "dark"
+                                            ? theme.white
+                                            : theme.colors.dark[8],
+                                        backgroundColor: "rgba(127, 127, 127, 0.15)",
+                                    },
+                                    ".selected &:hover": { color: theme.white },
+                                },
+                            })} >
+                            <Icon.InputCursorText size="1rem" />
+                        </ActionIcon>}
+                </Group>
                 : <></>}
         </Box>
     );

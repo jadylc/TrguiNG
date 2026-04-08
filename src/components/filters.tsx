@@ -89,6 +89,23 @@ const statusFilters: StatusFilter[] = [
         icon: StatusIcons.Stopped,
     },
     {
+        name: "Paused Completed",
+        filter: (t: Torrent) => {
+            return t.status === Status.stopped &&
+                t.sizeWhenDone > 0 &&
+                Math.max(t.sizeWhenDone - t.haveValid, 0) === 0;
+        },
+        icon: StatusIcons.Completed,
+    },
+    {
+        name: "Paused Incomplete",
+        filter: (t: Torrent) => {
+            return t.status === Status.stopped &&
+                (t.sizeWhenDone === 0 || Math.max(t.sizeWhenDone - t.haveValid, 0) > 0);
+        },
+        icon: StatusIcons.Stopped,
+    },
+    {
         name: "Error",
         filter: (t: Torrent) => (t.error !== 0 || t.cachedError !== ""),
         icon: StatusIcons.Error,

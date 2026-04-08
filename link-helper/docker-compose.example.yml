@@ -1,0 +1,20 @@
+services:
+  trguing-link-helper:
+    image: lc121a/trguing-link-helper:latest
+    container_name: trguing-link-helper
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      API_TOKEN: "replace-with-a-long-random-token"
+      ALLOWED_ROOTS: "/downloads,/media"
+      SEARCH_ROOTS: "/downloads,/media/torrents"
+      CANDIDATE_LIMIT: "20"
+      MIN_SCORE: "0.35"
+      AUTO_CREATE_TARGET_PARENT: "true"
+    ports:
+      - "8787:8787"
+    volumes:
+      # Replace these with the same NAS paths mounted into Transmission.
+      - /volume1/downloads:/downloads
+      - /volume1/media:/media

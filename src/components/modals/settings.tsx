@@ -73,6 +73,7 @@ function ServerListPanel({ form, current, setCurrent }: ServerListPanelProps) {
                     onClick={() => {
                         form.insertListItem("servers", {
                             connection: { url: "", username: "", password: "", acceptInvalidCerts: false },
+                            linkHelper: { url: "", token: "" },
                             name: "new",
                             pathMappings: [],
                             expandedDirFilters: [],
@@ -159,6 +160,19 @@ function ServerPanel(props: ServerPanelProps) {
                     <PasswordInput
                         label="Password"
                         {...props.form.getInputProps(`servers.${props.current}.connection.password`)} />
+                </Grid.Col>
+                <Grid.Col span={12}>
+                    <TextInput
+                        label="Link helper URL"
+                        {...props.form.getInputProps(`servers.${props.current}.linkHelper.url`)}
+                        placeholder="http://nas-host:8787"
+                        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false" />
+                </Grid.Col>
+                <Grid.Col span={12}>
+                    <PasswordInput
+                        label="Link helper token"
+                        {...props.form.getInputProps(`servers.${props.current}.linkHelper.token`)}
+                        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false" />
                 </Grid.Col>
 
                 <Grid.Col span={12}>
@@ -304,6 +318,20 @@ export function AppSettingsModal(props: AppSettingsModalProps) {
                 },
                 connection: {
                     url: (value) => {
+                        try {
+                            const url = new URL(value);
+                            if (!["http:", "https:"].includes(url.protocol)) {
+                                return "Only http/https URLs are supported";
+                            }
+                        } catch {
+                            return "Invalid URL";
+                        }
+                        return null;
+                    },
+                },
+                linkHelper: {
+                    url: (value) => {
+                        if (value.trim() === "") return null;
                         try {
                             const url = new URL(value);
                             if (!["http:", "https:"].includes(url.protocol)) {

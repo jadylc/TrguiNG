@@ -31,6 +31,11 @@ export interface ServerConnection {
     acceptInvalidCerts?: boolean,
 }
 
+export interface LinkHelperConnection {
+    url: string,
+    token: string,
+}
+
 export interface PathMapping {
     from: string,
     to: string,
@@ -39,6 +44,7 @@ export interface PathMapping {
 export interface ServerConfig {
     name: string,
     connection: ServerConnection,
+    linkHelper: LinkHelperConnection,
     pathMappings: PathMapping[],
     expandedDirFilters: string[],
     lastSaveDirs: string[],
@@ -71,7 +77,8 @@ const FilterSections = ["Status", "Directories", "Labels", "Trackers"] as const;
 export type FilterSectionName = typeof FilterSections[number];
 
 const StatusFilters = [
-    "All Torrents", "Downloading", "Completed", "Active", "Inactive", "Running", "Stopped", "Error", "Waiting", "Magnetizing",
+    "All Torrents", "Downloading", "Completed", "Active", "Inactive", "Running", "Stopped",
+    "Paused Completed", "Paused Incomplete", "Error", "Waiting", "Magnetizing",
 ] as const;
 export type StatusFilterName = typeof StatusFilters[number];
 type StatusFiltersVisibility = Record<StatusFilterName, boolean>;
@@ -369,7 +376,14 @@ export class Config {
         );
 
         this.values.servers = this.values.servers.map(
-            (s) => ({ ...s, connection: { ...s.connection, password: deobfuscate(s.connection.password) } }));
+            (s) => ({
+                ...s,
+                connection: { ...s.connection, password: deobfuscate(s.connection.password) },
+                linkHelper: {
+                    url: s.linkHelper?.url ?? "",
+                    token: deobfuscate(s.linkHelper?.token ?? ""),
+                },
+            }));
 
         if (this.values.app.lastTab >= this.values.app.openTabs.length) {
             this.values.app.lastTab = -1;
@@ -381,7 +395,11 @@ export class Config {
     async save() {
         const values = { ...this.values };
         values.servers = values.servers.map(
-            (s) => ({ ...s, connection: { ...s.connection, password: obfuscate(s.connection.password) } }));
+            (s) => ({
+                ...s,
+                connection: { ...s.connection, password: obfuscate(s.connection.password) },
+                linkHelper: { ...s.linkHelper, token: obfuscate(s.linkHelper.token) },
+            }));
         const configText = JSON.stringify(values, null, "    ");
         await writeConfigText(configText);
     }
@@ -524,6 +542,7 @@ export class Config {
 export const ConfigContext = React.createContext(new Config());
 export const ServerConfigContext = React.createContext<ServerConfig>({
     connection: { url: "", username: "", password: "" },
+    linkHelper: { url: "", token: "" },
     name: "",
     pathMappings: [],
     expandedDirFilters: [],

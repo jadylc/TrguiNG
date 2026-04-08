@@ -1,0 +1,101 @@
+import os
+import shutil
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from app import LinkHelperConfig, LinkHelperService, infer_target_kind, normalize_name, score_candidate
+
+
+class LinkHelperTests(unittest.TestCase):
+    @staticmethod
+    def _case_root(name: str) -> Path:
+        temp_root = Path(__file__).resolve().parent / ".tmp"
+        temp_root.mkdir(exist_ok=True)
+        case_root = temp_root / name
+        shutil.rmtree(case_root, ignore_errors=True)
+        case_root.mkdir()
+        return case_root
+
+    def test_normalize_name(self) -> None:
+        self.assertEqual(normalize_name("Movie.Name.2024.1080p.mkv"), "movie name 2024 1080p")
+
+    def test_infer_target_kind(self) -> None:
+        self.assertEqual(infer_target_kind("/downloads/movie/file.mkv", "auto"), "file")
+        self.assertEqual(infer_target_kind("/downloads/movie/folder", "auto"), "dir")
+
+    def test_score_candidate_prefers_exact_match(self) -> None:
+        score, reason = score_candidate("Movie.Name.2024", "Movie Name 2024", "dir", "dir")
+        self.assertGreaterEqual(score, 1.0)
+        self.assertIn("exact", reason)
+
+    def test_search_candidates_filters_by_allowed_roots(self) -> None:
+        root = self._case_root("search")
+        try:
+            target_dir = root / "downloads"
+            target_dir.mkdir()
+            (target_dir / "Movie Name 2024").mkdir()
+            (target_dir / "Unrelated").mkdir()
+
+            service = LinkHelperService(
+                LinkHelperConfig(
+                    host="127.0.0.1",
+                    port=8787,
+                    api_token="",
+                    allowed_roots=[root.resolve()],
+                    search_roots=[],
+                    candidate_limit=10,
+                    min_score=0.35,
+                    auto_create_target_parent=True,
+                )
+            )
+
+            result = service.search_candidates({
+                "torrentName": "Movie.Name.2024",
+                "downloadDir": target_dir.as_posix(),
+                "targetPath": (target_dir / "Movie.Name.2024").as_posix(),
+                "targetKindHint": "dir",
+            })
+
+            self.assertEqual(len(result["candidates"]), 1)
+            self.assertEqual(result["candidates"][0]["name"], "Movie Name 2024")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires Linux-like permissions in this environment")
+    def test_create_symlink(self) -> None:
+        root = self._case_root("link").resolve()
+        try:
+            source = root / "source"
+            target = root / "target"
+            source.mkdir()
+
+            service = LinkHelperService(
+                LinkHelperConfig(
+                    host="127.0.0.1",
+                    port=8787,
+                    api_token="",
+                    allowed_roots=[root],
+                    search_roots=[],
+                    candidate_limit=10,
+                    min_score=0.35,
+                    auto_create_target_parent=True,
+                )
+            )
+
+            result = service.create_symlink({
+                "sourcePath": source.as_posix(),
+                "targetPath": target.as_posix(),
+            })
+
+            self.assertEqual(result["status"], "created")
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(target.resolve(), source.resolve())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

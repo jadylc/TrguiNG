@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - v**
+      - nightly-*
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -154,8 +155,28 @@ jobs:
       - name: Downloaded artifacts
         run: ls -lhR artifacts/
 
+      - name: Determine release mode
+        id: release-mode
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG_NAME" == nightly-* ]]; then
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<EOF"
+              echo "Automated nightly build for \`$TAG_NAME\`."
+              echo
+              echo "Commit: \`${GITHUB_SHA}\`"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Generate changelog
       - id: prevtag
+        if: steps.release-mode.outputs.prerelease != 'true'
         run: |
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo '')
           echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
@@ -163,7 +184,7 @@ jobs:
       - name: Generate changelog
         id: changelog
         uses: jaywcjlove/changelog-generator@main
-        if: steps.prevtag.outputs.previous_tag
+        if: steps.release-mode.outputs.prerelease != 'true' && steps.prevtag.outputs.previous_tag
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           show-emoji: false
@@ -174,9 +195,12 @@ jobs:
         env:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
         with:
-          draft: true
+          draft: ${{ steps.release-mode.outputs.draft }}
+          prerelease: ${{ steps.release-mode.outputs.prerelease }}
           files: ./artifacts/**/*
           body: |
+            ${{ steps.release-mode.outputs.body }}
+
             ${{ steps.changelog.outputs.compareurl }}
 
             ${{ steps.changelog.outputs.changelog }}
@@ -184,7 +208,7 @@ jobs:
   update_aur:
     name: Publish AUR package
     needs: build-binaries
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3

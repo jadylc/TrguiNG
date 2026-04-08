@@ -28,10 +28,11 @@ import { ProgressBar } from "../progressbar";
 import type { AccessorFn, CellContext } from "@tanstack/table-core";
 import type { TableSelectReducer } from "./common";
 import { EditableNameField, TrguiTable } from "./common";
-import { Badge, Box, Button, Kbd, Menu, Portal, Text, useMantineTheme } from "@mantine/core";
+import { ActionIcon, Badge, Box, Button, Kbd, Menu, Portal, Text, useMantineTheme } from "@mantine/core";
 import { ConfigContext, ServerConfigContext } from "config";
 import { StatusIconMap, Error as StatusIconError, Magnetizing, CompletedStopped } from "components/statusicons";
 import { useMutateTorrentPath, useTorrentAction } from "queries";
+import { isLinkHelperConfigured } from "linkhelper";
 import { notifications } from "@mantine/notifications";
 import type { ContextMenuInfo } from "components/contextmenu";
 import { ContextMenu, useContextMenu } from "components/contextmenu";
@@ -45,6 +46,10 @@ interface TableFieldProps {
     torrent: Torrent,
     fieldName: TorrentAllFieldsType,
 }
+
+const TorrentRowActionsContext = React.createContext({
+    openLinkModal: (_torrentId: number) => { },
+});
 
 interface TableFieldSimple {
     name: TorrentFieldsType,
@@ -167,6 +172,8 @@ const AllFields: readonly TableField[] = [
 ] as const;
 
 function NameField(props: TableFieldProps) {
+    const serverConfig = useContext(ServerConfigContext);
+    const rowActions = useContext(TorrentRowActionsContext);
     let StatusIcon = StatusIconMap[props.torrent.status];
     if (props.torrent.status === Status.downloading && props.torrent.pieceCount === 0) {
         StatusIcon = Magnetizing;
@@ -205,7 +212,33 @@ function NameField(props: TableFieldProps) {
     const rpcVersion = useServerRpcVersion();
 
     return (
-        <EditableNameField currentName={currentName} onUpdate={rpcVersion >= 15 ? updateTorrentName : undefined}>
+        <EditableNameField
+            currentName={currentName}
+            onUpdate={rpcVersion >= 15 ? updateTorrentName : undefined}
+            actions={isLinkHelperConfigured(serverConfig)
+                ? <ActionIcon
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        rowActions.openLinkModal(props.torrent.id);
+                    }}
+                    title="Search symlink candidates"
+                    sx={(theme) => ({
+                        flexShrink: 0,
+                        ".selected &": { color: theme.colors.gray[2] },
+                        "@media (hover: hover)": {
+                            "&:hover": {
+                                color: theme.colorScheme === "dark"
+                                    ? theme.white
+                                    : theme.colors.dark[8],
+                                backgroundColor: "rgba(127, 127, 127, 0.15)",
+                            },
+                            ".selected &:hover": { color: theme.white },
+                        },
+                    })}>
+                    <Icon.Link45deg size="1rem" />
+                </ActionIcon>
+                : undefined}
+        >
             <Box pb="xs" className="icon-container">
                 <StatusIcon />
             </Box>
@@ -465,27 +498,32 @@ export function TorrentTable(props: {
     const selected = useMemo(() => Array.from(serverSelected).map(String), [serverSelected]);
 
     const [info, setInfo, handler] = useContextMenu();
+    const openLinkModal = useCallback((torrentId: number) => {
+        props.modals.current?.linkTorrent(torrentId);
+    }, [props.modals]);
 
     return (
-        <Box w="100%" h="100%" onContextMenu={handler}>
-            <MemoizedTorrentContextMenu
-                contextMenuInfo={info}
-                setContextMenuInfo={setInfo}
-                modals={props.modals}
-                onRowDoubleClick={onRowDoubleClick} />
-            <TrguiTable<Torrent> {...{
-                tablename: "torrents",
-                columns: Columns,
-                data: props.torrents,
-                getRowId,
-                selected,
-                selectedReducer: props.selectedReducer,
-                setCurrent: props.setCurrentTorrent,
-                onVisibilityChange,
-                onRowDoubleClick,
-                scrollToRow: props.scrollToRow,
-            }} />
-        </Box>
+        <TorrentRowActionsContext.Provider value={{ openLinkModal }}>
+            <Box w="100%" h="100%" onContextMenu={handler}>
+                <MemoizedTorrentContextMenu
+                    contextMenuInfo={info}
+                    setContextMenuInfo={setInfo}
+                    modals={props.modals}
+                    onRowDoubleClick={onRowDoubleClick} />
+                <TrguiTable<Torrent> {...{
+                    tablename: "torrents",
+                    columns: Columns,
+                    data: props.torrents,
+                    getRowId,
+                    selected,
+                    selectedReducer: props.selectedReducer,
+                    setCurrent: props.setCurrentTorrent,
+                    onVisibilityChange,
+                    onRowDoubleClick,
+                    scrollToRow: props.scrollToRow,
+                }} />
+            </Box>
+        </TorrentRowActionsContext.Provider>
     );
 }
 

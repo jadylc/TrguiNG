@@ -1,0 +1,5 @@
+__pycache__/
+.tmp/
+test_app.py
+docker-compose.example.yml
+README.md
