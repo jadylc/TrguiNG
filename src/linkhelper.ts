@@ -60,6 +60,15 @@ function helperUrl(serverConfig: ServerConfig, path: string) {
     return `${serverConfig.linkHelper.url.replace(/\/+$/, "")}${path}`;
 }
 
+function validateHeaderValue(name: string, value: string) {
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code < 0x20 || code > 0x7E) {
+            throw new Error(`${name} contains unsupported characters`);
+        }
+    }
+}
+
 async function helperFetchBrowser<TResponse>(
     serverConfig: ServerConfig,
     path: string,
@@ -69,7 +78,9 @@ async function helperFetchBrowser<TResponse>(
         Accept: "application/json",
     };
     if (serverConfig.linkHelper.token.trim() !== "") {
-        headers.Authorization = `Bearer ${serverConfig.linkHelper.token.trim()}`;
+        const authValue = `Bearer ${serverConfig.linkHelper.token.trim()}`;
+        validateHeaderValue("Link helper token", authValue);
+        headers.Authorization = authValue;
     }
     if (payload !== undefined) {
         headers["Content-Type"] = "application/json";
