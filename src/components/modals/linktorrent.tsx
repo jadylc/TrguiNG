@@ -136,7 +136,7 @@ export function LinkTorrentModal(props: LinkTorrentModalProps) {
             onClose={props.close}
             title="Create symlink"
             centered
-            size="lg"
+            size="xl"
         >
             <Box pos="relative" mih="24rem">
                 <LoadingOverlay visible={isLoading || loadingCandidates} />
