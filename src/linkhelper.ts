@@ -17,6 +17,7 @@
  */
 
 import type { ServerConfig } from "config";
+const { TAURI, invoke } = await import(/* webpackChunkName: "taurishim" */"taurishim");
 
 export interface SearchCandidatesRequest {
     torrentName: string,
@@ -59,15 +60,11 @@ function helperUrl(serverConfig: ServerConfig, path: string) {
     return `${serverConfig.linkHelper.url.replace(/\/+$/, "")}${path}`;
 }
 
-async function helperFetch<TResponse>(
+async function helperFetchBrowser<TResponse>(
     serverConfig: ServerConfig,
     path: string,
     payload?: SearchCandidatesRequest | CreateSymlinkRequest,
 ) {
-    if (serverConfig.linkHelper.url.trim() === "") {
-        throw new Error("Link helper URL is not configured");
-    }
-
     const headers: HeadersInit = {
         Accept: "application/json",
     };
@@ -98,6 +95,29 @@ async function helperFetch<TResponse>(
     }
 
     return await response.json() as TResponse;
+}
+
+async function helperFetch<TResponse>(
+    serverConfig: ServerConfig,
+    path: string,
+    payload?: SearchCandidatesRequest | CreateSymlinkRequest,
+) {
+    if (serverConfig.linkHelper.url.trim() === "") {
+        throw new Error("Link helper URL is not configured");
+    }
+
+    if (TAURI) {
+        return await invoke<TResponse>("link_helper_request", {
+            request: {
+                url: helperUrl(serverConfig, path),
+                token: serverConfig.linkHelper.token,
+                method: payload === undefined ? "GET" : "POST",
+                payload,
+            },
+        });
+    }
+
+    return await helperFetchBrowser<TResponse>(serverConfig, path, payload);
 }
 
 export function isLinkHelperConfigured(serverConfig: ServerConfig) {

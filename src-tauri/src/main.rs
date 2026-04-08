@@ -214,6 +214,7 @@ fn main() {
             commands::create_tray,
             commands::save_text_file,
             commands::load_text_file,
+            commands::link_helper_request,
         ])
         .manage(ListenerHandle(Arc::new(RwLock::new(ipc::Ipc::new()))))
         .manage(TorrentCacheHandle::default())

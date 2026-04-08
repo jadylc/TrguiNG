@@ -19,12 +19,13 @@ use std::fs;
 use base64::{engine::general_purpose::STANDARD as b64engine, Engine as _};
 use font_loader::system_fonts;
 use lava_torrent::torrent::v1::Torrent;
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use tauri::{Emitter, EventTarget, State};
 
 use crate::{
     createtorrent::{CreateCheckResult, CreationRequestsHandle, TorrentCreateInfo},
     poller::PollerConfig,
-    tray, PollerHandle,
+    tray, HttpClients, PollerHandle,
 };
 
 #[derive(serde::Serialize)]
@@ -298,4 +299,64 @@ pub async fn save_text_file(contents: String, path: String) -> Result<(), String
 #[tauri::command]
 pub async fn load_text_file(path: String) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("Unable to read file: {e}"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHelperRequest {
+    url: String,
+    token: String,
+    method: String,
+    payload: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct LinkHelperErrorResponse {
+    error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn link_helper_request(
+    http_clients: State<'_, HttpClients>,
+    request: LinkHelperRequest,
+) -> Result<serde_json::Value, String> {
+    let method = reqwest::Method::from_bytes(request.method.as_bytes())
+        .map_err(|e| format!("Unsupported link helper method: {e}"))?;
+
+    let mut req = http_clients
+        .default
+        .request(method, &request.url)
+        .header(ACCEPT, "application/json");
+
+    if !request.token.trim().is_empty() {
+        req = req.header(AUTHORIZATION, format!("Bearer {}", request.token.trim()));
+    }
+
+    if let Some(payload) = request.payload {
+        req = req.header(CONTENT_TYPE, "application/json").json(&payload);
+    }
+
+    let response = req
+        .send()
+        .await
+        .map_err(|e| format!("Link helper request failed: {e}"))?;
+
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Link helper response read failed: {e}"))?;
+
+    if !status.is_success() {
+        if let Ok(error_body) = serde_json::from_slice::<LinkHelperErrorResponse>(&body) {
+            if let Some(error) = error_body.error {
+                if !error.is_empty() {
+                    return Err(error);
+                }
+            }
+        }
+        return Err(format!("Link helper request failed: {status}"));
+    }
+
+    serde_json::from_slice(&body).map_err(|e| format!("Link helper response decode failed: {e}"))
 }
