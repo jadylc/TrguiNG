@@ -333,7 +333,9 @@ pub async fn link_helper_request(
     }
 
     if let Some(payload) = request.payload {
-        req = req.header(CONTENT_TYPE, "application/json").json(&payload);
+        let body = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Link helper request encode failed: {e}"))?;
+        req = req.header(CONTENT_TYPE, "application/json").body(body);
     }
 
     let response = req
