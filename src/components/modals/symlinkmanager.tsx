@@ -18,7 +18,7 @@
 
 import { Alert, Badge, Box, Button, Divider, Group, LoadingOverlay, Paper, ScrollArea, Stack, Switch, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { deleteLinkSymlink, isLinkHelperConfigured, listLinkSymlinks } from "linkhelper";
+import { deleteLinkSymlink, listLinkSymlinks } from "linkhelper";
 import type { SymlinkEntry } from "linkhelper";
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ConfigContext, ServerConfigContext } from "config";
@@ -34,10 +34,34 @@ interface SymlinkManagerModalProps {
 
 type EffectiveSymlinkStatus = "ok" | "broken" | "unused" | "checking" | "degraded";
 type ServerUsageLoadStatus = "loading" | "loaded" | "error";
+type HelperScanLoadStatus = "loading" | "loaded" | "error";
 
-interface SymlinkViewEntry extends SymlinkEntry {
+interface HelperSource {
+    key: string,
+    label: string,
+    url: string,
+    token: string,
+    serverNames: string[],
+    requestServerConfig: ServerConfig,
+}
+
+interface OwnedSymlinkEntry extends SymlinkEntry {
+    helperKey: string,
+    helperLabel: string,
+    helperUrl: string,
+    helperServerNames: string[],
+}
+
+interface SymlinkViewEntry extends OwnedSymlinkEntry {
     effectiveStatus: EffectiveSymlinkStatus,
     usedByTorrents: string[],
+}
+
+interface HelperSymlinkState {
+    helper: HelperSource,
+    status: HelperScanLoadStatus,
+    symlinks: OwnedSymlinkEntry[],
+    error?: string,
 }
 
 interface ServerUsageState {
@@ -54,8 +78,72 @@ interface ServerUsageResult {
     torrentCount: number,
 }
 
+interface SymlinkGroup {
+    helper: HelperSource,
+    helperState: HelperSymlinkState,
+    entries: SymlinkViewEntry[],
+}
+
 function normalizeComparePath(path: string) {
     return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function normalizeHelperUrl(url: string) {
+    return url.trim().replace(/\/+$/, "");
+}
+
+function helperIdentityKey(url: string, token: string) {
+    return `${normalizeHelperUrl(url)}\n${token.trim()}`;
+}
+
+function helperDisplayLabel(url: string) {
+    try {
+        const parsed = new URL(url);
+        const trimmedPath = parsed.pathname.replace(/\/+$/, "");
+        return `${parsed.host}${trimmedPath === "" ? "" : trimmedPath}`;
+    } catch {
+        return url;
+    }
+}
+
+function buildHelperSources(servers: ServerConfig[]) {
+    const helpers = new Map<string, HelperSource>();
+
+    servers.forEach((server) => {
+        const url = normalizeHelperUrl(server.linkHelper.url);
+        if (url === "") return;
+
+        const token = server.linkHelper.token.trim();
+        const key = helperIdentityKey(url, token);
+        const existing = helpers.get(key);
+        if (existing !== undefined) {
+            if (!existing.serverNames.includes(server.name)) {
+                existing.serverNames.push(server.name);
+                existing.serverNames.sort((left, right) => left.localeCompare(right));
+            }
+            return;
+        }
+
+        helpers.set(key, {
+            key,
+            label: helperDisplayLabel(url),
+            url,
+            token,
+            serverNames: [server.name],
+            requestServerConfig: {
+                ...server,
+                linkHelper: {
+                    url,
+                    token,
+                },
+            },
+        });
+    });
+
+    return Array.from(helpers.values()).sort((left, right) =>
+        left.label.localeCompare(right.label) ||
+        left.url.localeCompare(right.url),
+    );
 }
 
 function buildTorrentTargetPath(downloadDir: string, torrentName: string) {
@@ -114,18 +202,48 @@ function serverStatusColor(status: ServerUsageLoadStatus) {
     return "blue";
 }
 
+function helperStatusColor(status: HelperScanLoadStatus) {
+    if (status === "loaded") return "green";
+    if (status === "error") return "red";
+    return "blue";
+}
+
+function symlinkIdentity(item: Pick<OwnedSymlinkEntry, "helperKey" | "path">) {
+    return `${item.helperKey}::${item.path}`;
+}
+
+function decorateHelperSymlinks(helper: HelperSource, symlinks: SymlinkEntry[]): OwnedSymlinkEntry[] {
+    return symlinks.map((item) => ({
+        ...item,
+        helperKey: helper.key,
+        helperLabel: helper.label,
+        helperUrl: helper.url,
+        helperServerNames: [...helper.serverNames],
+    }));
+}
+
 export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
     const config = useContext(ConfigContext);
     const serverConfig = useContext(ServerConfigContext);
-    const [loading, setLoading] = useState(false);
     const [deletingPath, setDeletingPath] = useState<string>();
     const [deletingBroken, setDeletingBroken] = useState(false);
-    const [error, setError] = useState<string>();
+    const [actionError, setActionError] = useState<string>();
     const [invalidOnly, setInvalidOnly] = useState(false);
-    const [symlinks, setSymlinks] = useState<SymlinkEntry[]>([]);
+    const [helperSymlinkStates, setHelperSymlinkStates] = useState<Map<string, HelperSymlinkState>>(new Map());
     const [serverUsageStates, setServerUsageStates] = useState<Map<string, ServerUsageState>>(new Map());
 
-    const usageServers = config.getServers().length > 0 ? config.getServers() : [serverConfig];
+    const allServers = useMemo(() => {
+        const configuredServers = config.getServers();
+        if (configuredServers.length > 0) return configuredServers;
+        return serverConfig.name === "" ? [] : [serverConfig];
+    }, [config, serverConfig]);
+
+    const usageServers = allServers;
+    const helperSources = useMemo(() => buildHelperSources(allServers), [allServers]);
+    const helperSourceMap = useMemo(
+        () => new Map(helperSources.map((helper) => [helper.key, helper])),
+        [helperSources],
+    );
 
     const loadUsageForServer = useCallback(async (server: ServerConfig) => {
         setServerUsageStates((current) => {
@@ -175,78 +293,190 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
         targets.forEach((server) => { void loadUsageForServer(server); });
     }, [loadUsageForServer, usageServers]);
 
-    const loadAll = useCallback(() => {
-        if (!isLinkHelperConfigured(serverConfig)) return;
-        setLoading(true);
-        setError(undefined);
-        void listLinkSymlinks(serverConfig).then((response) => {
-            setSymlinks(response.symlinks);
-        }).catch((e: Error) => {
-            setSymlinks([]);
-            setError(e.message);
-        }).finally(() => {
-            setLoading(false);
+    const loadSymlinksForHelper = useCallback(async (helper: HelperSource) => {
+        setHelperSymlinkStates((current) => {
+            const next = new Map(current);
+            const previous = next.get(helper.key);
+            next.set(helper.key, {
+                helper,
+                status: "loading",
+                symlinks: previous?.symlinks ?? [],
+            });
+            return next;
         });
+
+        try {
+            const response = await listLinkSymlinks(helper.requestServerConfig);
+            setHelperSymlinkStates((current) => {
+                const next = new Map(current);
+                next.set(helper.key, {
+                    helper,
+                    status: "loaded",
+                    symlinks: decorateHelperSymlinks(helper, response.symlinks),
+                });
+                return next;
+            });
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            setHelperSymlinkStates((current) => {
+                const next = new Map(current);
+                const previous = next.get(helper.key);
+                next.set(helper.key, {
+                    helper,
+                    status: "error",
+                    symlinks: previous?.symlinks ?? [],
+                    error: message,
+                });
+                return next;
+            });
+        }
+    }, []);
+
+    const reloadHelperSymlinks = useCallback((helpers?: HelperSource[]) => {
+        const targets = helpers !== undefined && helpers.length > 0 ? helpers : helperSources;
+        targets.forEach((helper) => { void loadSymlinksForHelper(helper); });
+    }, [helperSources, loadSymlinksForHelper]);
+
+    const loadAll = useCallback(() => {
+        setActionError(undefined);
+        reloadHelperSymlinks();
         reloadDownloaderUsage();
-    }, [reloadDownloaderUsage, serverConfig]);
+    }, [reloadDownloaderUsage, reloadHelperSymlinks]);
 
     useEffect(() => {
-        if (props.opened) {
-            loadAll();
-        } else {
-            setLoading(false);
+        if (!props.opened) {
             setDeletingPath(undefined);
             setDeletingBroken(false);
-            setError(undefined);
-            setServerUsageStates(new Map());
+            setActionError(undefined);
+            return;
         }
-    }, [loadAll, props.opened]);
 
-    const onDelete = useCallback((path: string) => {
-        setDeletingPath(path);
-        setError(undefined);
-        void deleteLinkSymlink(serverConfig, { path }).then(() => {
-            setSymlinks((current) => current.filter((item) => item.path !== path));
+        const missingHelpers = helperSources.filter((helper) => !helperSymlinkStates.has(helper.key));
+        if (missingHelpers.length > 0) {
+            reloadHelperSymlinks(missingHelpers);
+        }
+        if (usageServers.length > 0 && serverUsageStates.size === 0) {
+            reloadDownloaderUsage();
+        }
+    }, [
+        helperSources,
+        helperSymlinkStates,
+        props.opened,
+        reloadDownloaderUsage,
+        reloadHelperSymlinks,
+        serverUsageStates.size,
+        usageServers.length,
+    ]);
+
+    const onDelete = useCallback((item: OwnedSymlinkEntry) => {
+        const helper = helperSourceMap.get(item.helperKey);
+        if (helper === undefined) return;
+
+        setDeletingPath(symlinkIdentity(item));
+        setActionError(undefined);
+        void deleteLinkSymlink(helper.requestServerConfig, { path: item.path }).then(() => {
+            setHelperSymlinkStates((current) => {
+                const next = new Map(current);
+                const helperState = next.get(item.helperKey);
+                if (helperState !== undefined) {
+                    next.set(item.helperKey, {
+                        ...helperState,
+                        symlinks: helperState.symlinks.filter((entry) => entry.path !== item.path),
+                    });
+                }
+                return next;
+            });
             notifications.show({
-                message: "Symlink deleted",
+                message: `Symlink deleted from ${item.helperLabel}`,
                 color: "green",
             });
         }).catch((e: Error) => {
-            setError(e.message);
+            setActionError(e.message);
         }).finally(() => {
             setDeletingPath(undefined);
         });
-    }, [serverConfig]);
+    }, [helperSourceMap]);
 
     const onDeleteBroken = useCallback(() => {
-        const brokenPaths = symlinks.filter((item) => item.status === "broken").map((item) => item.path);
-        if (brokenPaths.length === 0) return;
+        const helperBatches = new Map<string, OwnedSymlinkEntry[]>();
+        helperSymlinkStates.forEach((state) => {
+            state.symlinks
+                .filter((item) => item.status === "broken")
+                .forEach((item) => {
+                    const current = helperBatches.get(item.helperKey) ?? [];
+                    current.push(item);
+                    helperBatches.set(item.helperKey, current);
+                });
+        });
+
+        if (helperBatches.size === 0) return;
 
         setDeletingBroken(true);
-        setError(undefined);
+        setActionError(undefined);
         void (async () => {
-            const deletedPaths: string[] = [];
+            const deletedPathsByHelper = new Map<string, Set<string>>();
             try {
-                for (const path of brokenPaths) {
-                    await deleteLinkSymlink(serverConfig, { path });
-                    deletedPaths.push(path);
+                for (const [helperKey, entries] of helperBatches.entries()) {
+                    const helper = helperSourceMap.get(helperKey);
+                    if (helper === undefined) continue;
+
+                    for (const entry of entries) {
+                        await deleteLinkSymlink(helper.requestServerConfig, { path: entry.path });
+                        const deletedPaths = deletedPathsByHelper.get(helperKey) ?? new Set<string>();
+                        deletedPaths.add(entry.path);
+                        deletedPathsByHelper.set(helperKey, deletedPaths);
+                    }
                 }
 
-                setSymlinks((current) => current.filter((item) => !deletedPaths.includes(item.path)));
+                setHelperSymlinkStates((current) => {
+                    const next = new Map(current);
+                    deletedPathsByHelper.forEach((deletedPaths, helperKey) => {
+                        const helperState = next.get(helperKey);
+                        if (helperState === undefined) return;
+                        next.set(helperKey, {
+                            ...helperState,
+                            symlinks: helperState.symlinks.filter((item) => !deletedPaths.has(item.path)),
+                        });
+                    });
+                    return next;
+                });
+
+                const deletedCount = Array.from(deletedPathsByHelper.values())
+                    .reduce((sum, deletedPaths) => sum + deletedPaths.size, 0);
                 notifications.show({
-                    message: `Deleted ${deletedPaths.length} broken symlink${deletedPaths.length === 1 ? "" : "s"}`,
+                    message: `Deleted ${deletedCount} broken symlink${deletedCount === 1 ? "" : "s"}`,
                     color: "green",
                 });
             } catch (e) {
-                setError((e as Error).message);
-                if (deletedPaths.length > 0) {
-                    setSymlinks((current) => current.filter((item) => !deletedPaths.includes(item.path)));
+                setActionError((e as Error).message);
+                if (deletedPathsByHelper.size > 0) {
+                    setHelperSymlinkStates((current) => {
+                        const next = new Map(current);
+                        deletedPathsByHelper.forEach((deletedPaths, helperKey) => {
+                            const helperState = next.get(helperKey);
+                            if (helperState === undefined) return;
+                            next.set(helperKey, {
+                                ...helperState,
+                                symlinks: helperState.symlinks.filter((item) => !deletedPaths.has(item.path)),
+                            });
+                        });
+                        return next;
+                    });
                 }
             } finally {
                 setDeletingBroken(false);
             }
         })();
-    }, [serverConfig, symlinks]);
+    }, [helperSourceMap, helperSymlinkStates]);
+
+    const helperStatuses = useMemo(() => {
+        return helperSources.map((helper) =>
+            helperSymlinkStates.get(helper.key) ?? {
+                helper,
+                status: "loading" as const,
+                symlinks: [],
+            });
+    }, [helperSources, helperSymlinkStates]);
 
     const serverStatuses = useMemo(() => {
         return usageServers.map((server) => {
@@ -277,6 +507,11 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
         return usage;
     }, [serverStatuses]);
 
+    const symlinks = useMemo(
+        () => helperStatuses.flatMap((state) => state.symlinks),
+        [helperStatuses],
+    );
+
     const loadingServerCount = useMemo(
         () => serverStatuses.filter((state) => state.status === "loading").length,
         [serverStatuses],
@@ -284,6 +519,14 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
     const failedServerCount = useMemo(
         () => serverStatuses.filter((state) => state.status === "error").length,
         [serverStatuses],
+    );
+    const loadingHelperCount = useMemo(
+        () => helperStatuses.filter((state) => state.status === "loading").length,
+        [helperStatuses],
+    );
+    const failedHelperCount = useMemo(
+        () => helperStatuses.filter((state) => state.status === "error").length,
+        [helperStatuses],
     );
 
     const enrichedSymlinks = useMemo<SymlinkViewEntry[]>(() => {
@@ -305,15 +548,14 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
         });
     }, [failedServerCount, loadingServerCount, symlinks, torrentUsageMap]);
 
-    const filteredSymlinks = useMemo(
-        () => invalidOnly
+    const filteredSymlinks = useMemo(() => {
+        return invalidOnly
             ? enrichedSymlinks.filter((item) =>
                 item.effectiveStatus === "broken" ||
                 item.effectiveStatus === "unused" ||
                 item.effectiveStatus === "degraded")
-            : enrichedSymlinks,
-        [enrichedSymlinks, invalidOnly],
-    );
+            : enrichedSymlinks;
+    }, [enrichedSymlinks, invalidOnly]);
 
     const brokenCount = useMemo(
         () => enrichedSymlinks.filter((item) => item.effectiveStatus === "broken").length,
@@ -332,14 +574,42 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
         [enrichedSymlinks],
     );
     const okCount = enrichedSymlinks.length - brokenCount - unusedCount - checkingCount - degradedCount;
+
+    const groupedSymlinks = useMemo<SymlinkGroup[]>(() => {
+        const visibleEntriesByHelper = new Map<string, SymlinkViewEntry[]>();
+
+        filteredSymlinks.forEach((item) => {
+            const current = visibleEntriesByHelper.get(item.helperKey) ?? [];
+            current.push(item);
+            visibleEntriesByHelper.set(item.helperKey, current);
+        });
+
+        return helperStatuses
+            .map((helperState) => ({
+                helper: helperState.helper,
+                helperState,
+                entries: visibleEntriesByHelper.get(helperState.helper.key) ?? [],
+            }))
+            .filter((group) => group.entries.length > 0);
+    }, [filteredSymlinks, helperStatuses]);
+
+    const initialLoading = props.opened && helperSources.length > 0 && loadingHelperCount > 0 && symlinks.length === 0;
     const showServerStatusPanel = usageServers.length > 1 || loadingServerCount > 0 || failedServerCount > 0;
-    const notConfigured = !isLinkHelperConfigured(serverConfig);
+    const showHelperStatusPanel = helperSources.length > 1 || loadingHelperCount > 0 || failedHelperCount > 0;
+    const notConfigured = helperSources.length === 0;
 
     const retryServerUsage = useCallback((serverName: string) => {
         const target = usageServers.find((server) => server.name === serverName);
         if (target === undefined) return;
         void loadUsageForServer(target);
     }, [loadUsageForServer, usageServers]);
+
+    const retryHelperScan = useCallback((helperKey: string) => {
+        const helper = helperSourceMap.get(helperKey);
+        if (helper === undefined) return;
+        setActionError(undefined);
+        void loadSymlinksForHelper(helper);
+    }, [helperSourceMap, loadSymlinksForHelper]);
 
     return (
         <HkModal
@@ -350,11 +620,11 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
             size="92rem"
         >
             <Box pos="relative" mih="30rem">
-                <LoadingOverlay visible={loading} />
+                <LoadingOverlay visible={initialLoading} />
                 <Stack spacing="md">
                     <Group position="apart" align="flex-end">
                         <Stack spacing={4}>
-                            <Text weight={700}>Manage symlinks inside configured helper roots</Text>
+                            <Text weight={700}>Manage symlinks across all configured helper roots</Text>
                             <Group spacing="xs">
                                 <Badge color="gray" variant="light">{`${enrichedSymlinks.length} total`}</Badge>
                                 <Badge color="green" variant="light">{`${okCount} ok`}</Badge>
@@ -374,19 +644,24 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
                                 variant="light"
                                 onClick={() => { reloadDownloaderUsage(); }}
                                 loading={loadingServerCount > 0}
-                                disabled={notConfigured || deletingBroken}
+                                disabled={deletingBroken || deletingPath !== undefined}
                             >
                                 Reload downloaders
                             </Button>
-                            <Button variant="light" onClick={loadAll} disabled={notConfigured || deletingBroken}>
-                                Rescan
+                            <Button
+                                variant="light"
+                                onClick={loadAll}
+                                loading={loadingHelperCount > 0}
+                                disabled={notConfigured || deletingBroken || deletingPath !== undefined}
+                            >
+                                Rescan all helpers
                             </Button>
                             <Button
                                 color="red"
                                 variant="light"
                                 onClick={onDeleteBroken}
                                 loading={deletingBroken}
-                                disabled={notConfigured || brokenCount === 0 || deletingPath !== undefined}
+                                disabled={notConfigured || brokenCount === 0 || deletingPath !== undefined || loadingHelperCount > 0}
                             >
                                 Delete broken
                             </Button>
@@ -395,12 +670,60 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
 
                     {notConfigured &&
                         <Alert color="yellow" icon={<Icon.ExclamationTriangleFill size="1rem" />}>
-                            Link helper URL is not configured for this server.
+                            No link helper is configured on any downloader.
                         </Alert>}
 
-                    {error !== undefined &&
+                    {actionError !== undefined &&
                         <Alert color="red" icon={<Icon.XCircleFill size="1rem" />}>
-                            {error}
+                            {actionError}
+                        </Alert>}
+
+                    {showHelperStatusPanel &&
+                        <Paper p="sm" withBorder>
+                            <Stack spacing="xs">
+                                <Text weight={600}>Helper scan status</Text>
+                                {helperStatuses.map((state) => (
+                                    <Paper key={state.helper.key} p="xs" withBorder>
+                                        <Group position="apart" align="flex-start" noWrap>
+                                            <Stack spacing={2} sx={{ flexGrow: 1, minWidth: 0 }}>
+                                                <Group spacing="xs">
+                                                    <Text weight={600}>{state.helper.label}</Text>
+                                                    <Badge color={helperStatusColor(state.status)} variant="light">
+                                                        {state.status}
+                                                    </Badge>
+                                                    <Badge color="gray" variant="light">
+                                                        {`${state.helper.serverNames.length} downloader${state.helper.serverNames.length === 1 ? "" : "s"}`}
+                                                    </Badge>
+                                                </Group>
+                                                <Text size="xs" color="dimmed" sx={{ wordBreak: "break-all" }}>
+                                                    {state.helper.url}
+                                                </Text>
+                                                <Text size="xs" color="dimmed">
+                                                    {`Configured on: ${state.helper.serverNames.join(", ")}`}
+                                                </Text>
+                                                {state.status === "error" &&
+                                                    <Text size="xs" color="dimmed">
+                                                        {state.error}
+                                                    </Text>}
+                                            </Stack>
+                                            <Button
+                                                compact
+                                                variant="light"
+                                                onClick={() => { retryHelperScan(state.helper.key); }}
+                                                loading={state.status === "loading"}
+                                                disabled={deletingBroken || deletingPath !== undefined}
+                                            >
+                                                {state.status === "error" ? "Retry" : "Rescan"}
+                                            </Button>
+                                        </Group>
+                                    </Paper>
+                                ))}
+                            </Stack>
+                        </Paper>}
+
+                    {failedHelperCount > 0 &&
+                        <Alert color="yellow" icon={<Icon.ExclamationTriangleFill size="1rem" />}>
+                            Some helpers failed to load. Loaded helpers remain available below.
                         </Alert>}
 
                     {showServerStatusPanel &&
@@ -440,85 +763,130 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
 
                     <ScrollArea.Autosize mah="32rem">
                         <Stack spacing="sm">
-                            {!loading && !notConfigured && filteredSymlinks.length === 0 &&
+                            {!initialLoading && !notConfigured && groupedSymlinks.length === 0 &&
                                 <Text color="dimmed">
-                                    {invalidOnly ? "No invalid symlinks found." : "No symlinks found under configured roots."}
+                                    {invalidOnly
+                                        ? "No invalid symlinks found across configured helpers."
+                                        : failedHelperCount === helperSources.length
+                                            ? "No symlink results available because every helper scan failed."
+                                            : "No symlinks found under configured helper roots."}
                                 </Text>}
-                            {filteredSymlinks.map((item) => (
-                                <Paper key={item.path} p="sm" withBorder>
-                                    <Group position="apart" align="flex-start" noWrap>
-                                        <Stack spacing={4} sx={{ flexGrow: 1, minWidth: 0 }}>
-                                            <Group spacing="xs">
-                                                <Text weight={600}>{item.name}</Text>
-                                                <Badge
-                                                    color={
-                                                        item.effectiveStatus === "broken"
-                                                            ? "red"
-                                                            : item.effectiveStatus === "unused"
-                                                                ? "yellow"
-                                                                : item.effectiveStatus === "checking"
-                                                                    ? "blue"
+                            {groupedSymlinks.map((group) => (
+                                <Paper key={group.helper.key} p="sm" withBorder>
+                                    <Stack spacing="sm">
+                                        <Group position="apart" align="flex-start" noWrap>
+                                            <Stack spacing={4} sx={{ flexGrow: 1, minWidth: 0 }}>
+                                                <Group spacing="xs">
+                                                    <Text weight={700}>{group.helper.label}</Text>
+                                                    <Badge color={helperStatusColor(group.helperState.status)} variant="light">
+                                                        {group.helperState.status}
+                                                    </Badge>
+                                                    <Badge color="gray" variant="light">
+                                                        {`${group.entries.length} shown`}
+                                                    </Badge>
+                                                    <Badge color="gray" variant="light">
+                                                        {`${group.helper.serverNames.length} downloader${group.helper.serverNames.length === 1 ? "" : "s"}`}
+                                                    </Badge>
+                                                </Group>
+                                                <Text size="xs" color="dimmed" sx={{ wordBreak: "break-all" }}>
+                                                    {group.helper.url}
+                                                </Text>
+                                                <Text size="xs" color="dimmed">
+                                                    {`Configured on: ${group.helper.serverNames.join(", ")}`}
+                                                </Text>
+                                            </Stack>
+                                            <Button
+                                                compact
+                                                variant="light"
+                                                onClick={() => { retryHelperScan(group.helper.key); }}
+                                                loading={group.helperState.status === "loading"}
+                                                disabled={deletingBroken || deletingPath !== undefined}
+                                            >
+                                                Rescan helper
+                                            </Button>
+                                        </Group>
+
+                                        {group.entries.map((item) => (
+                                            <Paper key={symlinkIdentity(item)} p="sm" withBorder>
+                                                <Group position="apart" align="flex-start" noWrap>
+                                                    <Stack spacing={4} sx={{ flexGrow: 1, minWidth: 0 }}>
+                                                        <Group spacing="xs">
+                                                            <Text weight={600}>{item.name}</Text>
+                                                            <Badge
+                                                                color={
+                                                                    item.effectiveStatus === "broken"
+                                                                        ? "red"
+                                                                        : item.effectiveStatus === "unused"
+                                                                            ? "yellow"
+                                                                            : item.effectiveStatus === "checking"
+                                                                                ? "blue"
+                                                                                : item.effectiveStatus === "degraded"
+                                                                                    ? "orange"
+                                                                                    : "green"
+                                                                }
+                                                                variant="light">
+                                                                {item.effectiveStatus}
+                                                            </Badge>
+                                                            <Badge variant="light">{item.targetKind}</Badge>
+                                                            <Badge color={item.status === "broken" ? "red" : "teal"} variant="light">
+                                                                {item.status === "broken" ? "source missing" : "source ok"}
+                                                            </Badge>
+                                                            <Badge
+                                                                color={
+                                                                    item.effectiveStatus === "checking"
+                                                                        ? "blue"
+                                                                        : item.effectiveStatus === "degraded"
+                                                                            ? "orange"
+                                                                            : item.usedByTorrents.length > 0 ? "blue" : "yellow"
+                                                                }
+                                                                variant="light">
+                                                                {item.effectiveStatus === "checking"
+                                                                    ? "checking downloaders"
                                                                     : item.effectiveStatus === "degraded"
-                                                                        ? "orange"
-                                                                        : "green"
-                                                    }
-                                                    variant="light">
-                                                    {item.effectiveStatus}
-                                                </Badge>
-                                                <Badge variant="light">{item.targetKind}</Badge>
-                                                <Badge color={item.status === "broken" ? "red" : "teal"} variant="light">
-                                                    {item.status === "broken" ? "source missing" : "source ok"}
-                                                </Badge>
-                                                <Badge
-                                                    color={
-                                                        item.effectiveStatus === "checking"
-                                                            ? "blue"
-                                                            : item.effectiveStatus === "degraded"
-                                                                ? "orange"
-                                                                : item.usedByTorrents.length > 0 ? "blue" : "yellow"
-                                                    }
-                                                    variant="light">
-                                                    {item.effectiveStatus === "checking"
-                                                        ? "checking downloaders"
-                                                        : item.effectiveStatus === "degraded"
-                                                            ? "server data incomplete"
-                                                            : item.usedByTorrents.length > 0 ? "used by Transmission" : "not in Transmission"}
-                                                </Badge>
-                                            </Group>
-                                            <Text size="sm" color="dimmed">Symlink path</Text>
-                                            <Text size="sm" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
-                                                {item.path}
-                                            </Text>
-                                            <Text size="sm" color="dimmed">Target path</Text>
-                                            <Text size="sm" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
-                                                {item.targetPath}
-                                            </Text>
-                                            <Text size="xs" color="dimmed">
-                                                {`Raw target: ${item.rawTarget}`}
-                                            </Text>
-                                            <Text size="xs" color="dimmed">
-                                                {`Root: ${item.root}`}
-                                            </Text>
-                                            <Text size="xs" color="dimmed">
-                                                {item.effectiveStatus === "checking"
-                                                    ? "Transmission torrents: checking configured servers..."
-                                                    : item.effectiveStatus === "degraded"
-                                                        ? "Transmission torrents: some servers failed to load, retry the failed servers above"
-                                                        : item.usedByTorrents.length > 0
-                                                            ? `Transmission torrents: ${item.usedByTorrents.join(", ")}`
-                                                            : "Transmission torrents: none"}
-                                            </Text>
-                                        </Stack>
-                                        <Button
-                                            color="red"
-                                            variant="light"
-                                            onClick={() => { onDelete(item.path); }}
-                                            loading={deletingPath === item.path}
-                                            disabled={deletingBroken}
-                                        >
-                                            Delete
-                                        </Button>
-                                    </Group>
+                                                                        ? "server data incomplete"
+                                                                        : item.usedByTorrents.length > 0 ? "used by Transmission" : "not in Transmission"}
+                                                            </Badge>
+                                                        </Group>
+                                                        <Text size="sm" color="dimmed">Symlink path</Text>
+                                                        <Text size="sm" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+                                                            {item.path}
+                                                        </Text>
+                                                        <Text size="sm" color="dimmed">Target path</Text>
+                                                        <Text size="sm" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+                                                            {item.targetPath}
+                                                        </Text>
+                                                        <Text size="xs" color="dimmed">
+                                                            {`Raw target: ${item.rawTarget}`}
+                                                        </Text>
+                                                        <Text size="xs" color="dimmed">
+                                                            {`Root: ${item.root}`}
+                                                        </Text>
+                                                        <Text size="xs" color="dimmed">
+                                                            {`Helper: ${item.helperLabel} (${item.helperServerNames.join(", ")})`}
+                                                        </Text>
+                                                        <Text size="xs" color="dimmed">
+                                                            {item.effectiveStatus === "checking"
+                                                                ? "Transmission torrents: checking configured servers..."
+                                                                : item.effectiveStatus === "degraded"
+                                                                    ? "Transmission torrents: some servers failed to load, retry the failed servers above"
+                                                                    : item.usedByTorrents.length > 0
+                                                                        ? `Transmission torrents: ${item.usedByTorrents.join(", ")}`
+                                                                        : "Transmission torrents: none"}
+                                                        </Text>
+                                                    </Stack>
+                                                    <Button
+                                                        color="red"
+                                                        variant="light"
+                                                        onClick={() => { onDelete(item); }}
+                                                        loading={deletingPath === symlinkIdentity(item)}
+                                                        disabled={deletingBroken || loadingHelperCount > 0}
+                                                    >
+                                                        Delete
+                                                    </Button>
+                                                </Group>
+                                            </Paper>
+                                        ))}
+                                    </Stack>
                                 </Paper>
                             ))}
                         </Stack>
