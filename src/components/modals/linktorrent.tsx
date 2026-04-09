@@ -19,9 +19,11 @@
 import { Alert, Badge, Box, Button, Divider, Group, LoadingOverlay, Paper, ScrollArea, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { createLinkSymlink, isLinkHelperConfigured, searchLinkCandidates } from "linkhelper";
+import type { SearchCandidate } from "linkhelper";
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ServerConfigContext } from "config";
 import { useTorrentDetails } from "queries";
+import { bytesToHumanReadableStr } from "trutil";
 import { HkModal } from "./common";
 import * as Icon from "react-bootstrap-icons";
 
@@ -65,14 +67,7 @@ export function LinkTorrentModal(props: LinkTorrentModalProps) {
     const [loadingCandidates, setLoadingCandidates] = useState(false);
     const [loadingCreatePath, setLoadingCreatePath] = useState<string>();
     const [error, setError] = useState<string>();
-    const [candidates, setCandidates] = useState<Array<{
-        path: string,
-        name: string,
-        kind: "file" | "dir" | "other",
-        score: number,
-        reason: string,
-        searchRoot: string,
-    }>>([]);
+    const [candidates, setCandidates] = useState<SearchCandidate[]>([]);
 
     const loadCandidates = useCallback(() => {
         if (props.torrentId === undefined || torrent?.downloadDir === undefined || torrent?.name === undefined) return;
@@ -136,7 +131,7 @@ export function LinkTorrentModal(props: LinkTorrentModalProps) {
             onClose={props.close}
             title="Create symlink"
             centered
-            size="xl"
+            size="72rem"
         >
             <Box pos="relative" mih="24rem">
                 <LoadingOverlay visible={isLoading || loadingCandidates} />
@@ -178,11 +173,15 @@ export function LinkTorrentModal(props: LinkTorrentModalProps) {
                                             <Group spacing="xs">
                                                 <Text weight={600}>{candidate.name}</Text>
                                                 <Badge variant="light">{candidate.kind}</Badge>
+                                                <Badge color="gray" variant="light">
+                                                    {candidate.sizeBytes === null ? "size unknown" : bytesToHumanReadableStr(candidate.sizeBytes)}
+                                                </Badge>
                                                 <Badge color={candidate.score >= 0.9 ? "green" : "blue"} variant="light">
                                                     {candidate.score.toFixed(2)}
                                                 </Badge>
                                             </Group>
                                             <Text size="sm" sx={{ fontFamily: "monospace" }}>{candidate.path}</Text>
+                                            <Text size="xs" color="dimmed">{`Search root: ${candidate.searchRoot}`}</Text>
                                             <Text size="xs" color="dimmed">{candidate.reason}</Text>
                                         </Stack>
                                         <Button

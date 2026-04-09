@@ -22,6 +22,7 @@ import { deleteLinkSymlink, isLinkHelperConfigured, listLinkSymlinks } from "lin
 import type { SymlinkEntry } from "linkhelper";
 import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { ServerConfigContext } from "config";
+import { useServerTorrentData } from "rpc/torrent";
 import { HkModal } from "./common";
 import * as Icon from "react-bootstrap-icons";
 
@@ -30,13 +31,29 @@ interface SymlinkManagerModalProps {
     close: () => void,
 }
 
+type EffectiveSymlinkStatus = "ok" | "broken" | "unused";
+
+interface SymlinkViewEntry extends SymlinkEntry {
+    effectiveStatus: EffectiveSymlinkStatus,
+    usedByTorrents: string[],
+}
+
+function normalizeComparePath(path: string) {
+    return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function buildTorrentTargetPath(downloadDir: string, torrentName: string) {
+    return normalizeComparePath(`${downloadDir.replace(/[\\/]+$/, "")}/${torrentName}`);
+}
+
 export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
     const serverConfig = useContext(ServerConfigContext);
+    const serverData = useServerTorrentData();
     const [loading, setLoading] = useState(false);
     const [deletingPath, setDeletingPath] = useState<string>();
     const [deletingBroken, setDeletingBroken] = useState(false);
     const [error, setError] = useState<string>();
-    const [brokenOnly, setBrokenOnly] = useState(false);
+    const [invalidOnly, setInvalidOnly] = useState(false);
     const [symlinks, setSymlinks] = useState<SymlinkEntry[]>([]);
 
     const loadSymlinks = useCallback(() => {
@@ -110,15 +127,52 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
         })();
     }, [serverConfig, symlinks]);
 
+    const torrentUsageMap = useMemo(() => {
+        const usage = new Map<string, string[]>();
+
+        for (const torrent of serverData.torrents) {
+            if (typeof torrent.downloadDir !== "string" || typeof torrent.name !== "string") continue;
+
+            const path = buildTorrentTargetPath(torrent.downloadDir, torrent.name);
+            const currentUsers = usage.get(path) ?? [];
+            if (!currentUsers.includes(torrent.name)) {
+                currentUsers.push(torrent.name);
+                usage.set(path, currentUsers);
+            }
+        }
+
+        return usage;
+    }, [serverData.torrents]);
+
+    const enrichedSymlinks = useMemo<SymlinkViewEntry[]>(() => {
+        return symlinks.map((item) => {
+            const usedByTorrents = torrentUsageMap.get(normalizeComparePath(item.path)) ?? [];
+            const effectiveStatus: EffectiveSymlinkStatus = item.status === "broken"
+                ? "broken"
+                : usedByTorrents.length > 0 ? "ok" : "unused";
+
+            return {
+                ...item,
+                effectiveStatus,
+                usedByTorrents,
+            };
+        });
+    }, [symlinks, torrentUsageMap]);
+
     const filteredSymlinks = useMemo(
-        () => brokenOnly ? symlinks.filter((item) => item.status === "broken") : symlinks,
-        [brokenOnly, symlinks],
+        () => invalidOnly ? enrichedSymlinks.filter((item) => item.effectiveStatus !== "ok") : enrichedSymlinks,
+        [enrichedSymlinks, invalidOnly],
     );
 
     const brokenCount = useMemo(
-        () => symlinks.filter((item) => item.status === "broken").length,
-        [symlinks],
+        () => enrichedSymlinks.filter((item) => item.effectiveStatus === "broken").length,
+        [enrichedSymlinks],
     );
+    const unusedCount = useMemo(
+        () => enrichedSymlinks.filter((item) => item.effectiveStatus === "unused").length,
+        [enrichedSymlinks],
+    );
+    const okCount = enrichedSymlinks.length - brokenCount - unusedCount;
     const notConfigured = !isLinkHelperConfigured(serverConfig);
 
     return (
@@ -127,7 +181,7 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
             onClose={props.close}
             title="Symlink manager"
             centered
-            size="70rem"
+            size="92rem"
         >
             <Box pos="relative" mih="30rem">
                 <LoadingOverlay visible={loading} />
@@ -136,16 +190,17 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
                         <Stack spacing={4}>
                             <Text weight={700}>Manage symlinks inside configured helper roots</Text>
                             <Group spacing="xs">
-                                <Badge color="gray" variant="light">{`${symlinks.length} total`}</Badge>
-                                <Badge color="green" variant="light">{`${symlinks.length - brokenCount} ok`}</Badge>
+                                <Badge color="gray" variant="light">{`${enrichedSymlinks.length} total`}</Badge>
+                                <Badge color="green" variant="light">{`${okCount} ok`}</Badge>
+                                <Badge color="yellow" variant="light">{`${unusedCount} unused`}</Badge>
                                 <Badge color="red" variant="light">{`${brokenCount} broken`}</Badge>
                             </Group>
                         </Stack>
                         <Group spacing="sm">
                             <Switch
-                                checked={brokenOnly}
-                                onChange={(e) => { setBrokenOnly(e.currentTarget.checked); }}
-                                label="Broken only"
+                                checked={invalidOnly}
+                                onChange={(e) => { setInvalidOnly(e.currentTarget.checked); }}
+                                label="Invalid only"
                             />
                             <Button variant="light" onClick={loadSymlinks} disabled={notConfigured || deletingBroken}>
                                 Rescan
@@ -178,7 +233,7 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
                         <Stack spacing="sm">
                             {!loading && !notConfigured && filteredSymlinks.length === 0 &&
                                 <Text color="dimmed">
-                                    {brokenOnly ? "No broken symlinks found." : "No symlinks found under configured roots."}
+                                    {invalidOnly ? "No invalid symlinks found." : "No symlinks found under configured roots."}
                                 </Text>}
                             {filteredSymlinks.map((item) => (
                                 <Paper key={item.path} p="sm" withBorder>
@@ -186,10 +241,18 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
                                         <Stack spacing={4} sx={{ flexGrow: 1, minWidth: 0 }}>
                                             <Group spacing="xs">
                                                 <Text weight={600}>{item.name}</Text>
-                                                <Badge color={item.status === "broken" ? "red" : "green"} variant="light">
-                                                    {item.status}
+                                                <Badge
+                                                    color={item.effectiveStatus === "broken" ? "red" : item.effectiveStatus === "unused" ? "yellow" : "green"}
+                                                    variant="light">
+                                                    {item.effectiveStatus}
                                                 </Badge>
                                                 <Badge variant="light">{item.targetKind}</Badge>
+                                                <Badge color={item.status === "broken" ? "red" : "teal"} variant="light">
+                                                    {item.status === "broken" ? "source missing" : "source ok"}
+                                                </Badge>
+                                                <Badge color={item.usedByTorrents.length > 0 ? "blue" : "yellow"} variant="light">
+                                                    {item.usedByTorrents.length > 0 ? "used by Transmission" : "not in Transmission"}
+                                                </Badge>
                                             </Group>
                                             <Text size="sm" color="dimmed">Symlink path</Text>
                                             <Text size="sm" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
@@ -204,6 +267,11 @@ export function SymlinkManagerModal(props: SymlinkManagerModalProps) {
                                             </Text>
                                             <Text size="xs" color="dimmed">
                                                 {`Root: ${item.root}`}
+                                            </Text>
+                                            <Text size="xs" color="dimmed">
+                                                {item.usedByTorrents.length > 0
+                                                    ? `Transmission torrents: ${item.usedByTorrents.join(", ")}`
+                                                    : "Transmission torrents: none"}
                                             </Text>
                                         </Stack>
                                         <Button

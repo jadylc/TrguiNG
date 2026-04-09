@@ -167,16 +167,14 @@ class LinkHelperService:
             "searchRoots": [root.as_posix() for root in self.config.search_roots],
         }
 
-    def _iter_symlinks(self, directory: Path):
+    def _iter_tree(self, directory: Path):
         try:
             with os.scandir(directory) as entries:
                 subdirs: list[Path] = []
                 for entry in entries:
                     try:
                         entry_path = Path(entry.path)
-                        if entry.is_symlink():
-                            yield entry_path
-                            continue
+                        yield entry_path
                         if entry.is_dir(follow_symlinks=False):
                             subdirs.append(entry_path)
                     except OSError:
@@ -185,7 +183,35 @@ class LinkHelperService:
             return
 
         for subdir in subdirs:
-            yield from self._iter_symlinks(subdir)
+            yield from self._iter_tree(subdir)
+
+    def _iter_symlinks(self, directory: Path):
+        for entry_path in self._iter_tree(directory):
+            try:
+                if entry_path.is_symlink():
+                    yield entry_path
+            except OSError:
+                continue
+
+    def _measure_path_size(self, path: Path) -> int | None:
+        try:
+            if path.is_symlink():
+                return None
+            if path.is_file():
+                return path.stat().st_size
+            if path.is_dir():
+                total_size = 0
+                for child_path in self._iter_tree(path):
+                    try:
+                        if child_path.is_symlink() or not child_path.is_file():
+                            continue
+                        total_size += child_path.stat().st_size
+                    except OSError:
+                        continue
+                return total_size
+        except OSError:
+            return None
+        return None
 
     def _describe_symlink(self, symlink_path: Path, root: Path) -> dict[str, Any]:
         raw_target = os.readlink(symlink_path)
@@ -253,29 +279,29 @@ class LinkHelperService:
         seen_paths: set[Path] = set()
 
         for directory in search_dirs:
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    item_path = Path(entry.path).resolve(strict=False)
-                    if item_path in seen_paths:
-                        continue
-                    seen_paths.add(item_path)
+            for candidate_path in self._iter_tree(directory):
+                item_path = candidate_path.resolve(strict=False)
+                if item_path in seen_paths:
+                    continue
+                seen_paths.add(item_path)
 
-                    item_kind = candidate_kind(item_path)
-                    if item_kind == "other":
-                        continue
+                item_kind = candidate_kind(item_path)
+                if item_kind == "other":
+                    continue
 
-                    score, reason = score_candidate(torrent_name, entry.name, target_kind, item_kind)
-                    if score < self.config.min_score:
-                        continue
+                score, reason = score_candidate(torrent_name, candidate_path.name, target_kind, item_kind)
+                if score < self.config.min_score:
+                    continue
 
-                    candidates.append({
-                        "path": item_path.as_posix(),
-                        "name": entry.name,
-                        "kind": item_kind,
-                        "score": round(score, 4),
-                        "reason": reason,
-                        "searchRoot": directory.as_posix(),
-                    })
+                candidates.append({
+                    "path": item_path.as_posix(),
+                    "name": candidate_path.name,
+                    "kind": item_kind,
+                    "score": round(score, 4),
+                    "reason": reason,
+                    "searchRoot": directory.as_posix(),
+                    "sizeBytes": self._measure_path_size(candidate_path),
+                })
 
         candidates.sort(key=lambda item: (-item["score"], item["name"]))
         candidates = candidates[:self.config.candidate_limit]

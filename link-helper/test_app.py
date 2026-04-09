@@ -64,6 +64,46 @@ class LinkHelperTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_search_candidates_walks_nested_directories_and_reports_size(self) -> None:
+        root = self._case_root("search_nested")
+        try:
+            target_dir = root / "downloads"
+            library_dir = root / "library"
+            nested_dir = library_dir / "movies" / "Movie Name 2024"
+
+            target_dir.mkdir()
+            nested_dir.mkdir(parents=True)
+            (nested_dir / "disc1.mkv").write_bytes(b"1234")
+            (nested_dir / "disc2.srt").write_bytes(b"56")
+
+            service = LinkHelperService(
+                LinkHelperConfig(
+                    host="127.0.0.1",
+                    port=8787,
+                    api_token="",
+                    allowed_roots=[root.resolve()],
+                    search_roots=[library_dir.resolve()],
+                    candidate_limit=10,
+                    min_score=0.35,
+                    auto_create_target_parent=True,
+                )
+            )
+
+            result = service.search_candidates({
+                "torrentName": "Movie.Name.2024",
+                "downloadDir": target_dir.as_posix(),
+                "targetPath": (target_dir / "Movie.Name.2024").as_posix(),
+                "targetKindHint": "dir",
+            })
+
+            matched = next((item for item in result["candidates"] if item["name"] == "Movie Name 2024"), None)
+
+            self.assertIsNotNone(matched)
+            self.assertEqual(matched["searchRoot"], library_dir.as_posix())
+            self.assertEqual(matched["sizeBytes"], 6)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     @unittest.skipIf(os.name == "nt", "symlink creation requires Linux-like permissions in this environment")
     def test_create_symlink(self) -> None:
         root = self._case_root("link").resolve()

@@ -33,6 +33,7 @@ export interface SearchCandidate {
     score: number,
     reason: string,
     searchRoot: string,
+    sizeBytes: number | null,
 }
 
 export interface SearchCandidatesResponse {
