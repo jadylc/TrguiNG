@@ -186,12 +186,24 @@ class LinkHelperService:
             yield from self._iter_tree(subdir)
 
     def _iter_symlinks(self, directory: Path):
-        for entry_path in self._iter_tree(directory):
-            try:
-                if entry_path.is_symlink():
-                    yield entry_path
-            except OSError:
-                continue
+        try:
+            with os.scandir(directory) as entries:
+                subdirs: list[Path] = []
+                for entry in entries:
+                    try:
+                        entry_path = Path(entry.path)
+                        if entry.is_symlink():
+                            yield entry_path
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            subdirs.append(entry_path)
+                    except OSError:
+                        continue
+        except OSError:
+            return
+
+        for subdir in subdirs:
+            yield from self._iter_symlinks(subdir)
 
     def _measure_path_size(self, path: Path) -> int | None:
         try:
